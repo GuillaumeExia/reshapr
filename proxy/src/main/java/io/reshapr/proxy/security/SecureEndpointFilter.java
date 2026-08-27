@@ -93,6 +93,11 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
          JWTClaimNames.JWT_ID
    );
 
+   /** RFC 6750 section 3.1 code for a token that is expired, revoked, malformed or otherwise invalid. */
+   private static final String ERROR_INVALID_TOKEN = "invalid_token";
+   /** RFC 6750 section 3.1 code for a token that lacks a scope this resource requires. */
+   private static final String ERROR_INSUFFICIENT_SCOPE = "insufficient_scope";
+
    private final GatewayRegistry gatewayRegistry;
    private final AuditLogger auditLogger;
 
@@ -181,12 +186,10 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
       if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
          logger.warnf("Missing or invalid Authorization header for configuration with ID: '%s'", configuration.id());
          emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MISSING_BEARER, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
-         logger.warnf("Redirecting to '%s'", fqdnScheme
-               + fqdns.getFirst() + "/.well-known/oauth-protected-resource" + ctx.getUriInfo().getPath());
-         ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED)
-               .header(HttpHeaders.WWW_AUTHENTICATE, "Bearer resource_metadata=" + fqdnScheme
-                     + fqdns.getFirst() + "/.well-known/oauth-protected-resource" + ctx.getUriInfo().getPath())
-               .build());
+         logger.warnf("Redirecting to '%s'", resourceMetadataUrl(ctx));
+         // No credentials were presented, so RFC 6750 section 3 says the challenge carries no error
+         // code: only the pointer the client needs to find out how to authenticate.
+         abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, null, null, null);
          return;
       }
 
@@ -197,7 +200,8 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
          jwksUri = URI.create(oauth2Config.jwksUri()).toURL();
       } catch (Exception e) {
          logger.errorf("Invalid JWK Set URL in OAuth2 configuration: '%s'", oauth2Config.jwksUri());
-         ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+         // Our own misconfiguration: re-authenticating cannot help the client.
+         ctx.abortWith(Response.status(Response.Status.INTERNAL_SERVER_ERROR).build());
          return;
       }
       String token = authorizationHeader.substring("Bearer ".length());
@@ -233,14 +237,15 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
       } catch (ParseException | BadJOSEException e) {
          // Malformed token.
          logger.warnf("Bad OAuth2 token received: %s", e.getMessage());
-         emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MALFORMED_TOKEN, Response.Status.BAD_REQUEST.getStatusCode(), ctx);
-         ctx.abortWith(Response.status(Response.Status.BAD_REQUEST).build());
+         emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MALFORMED_TOKEN, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
+         abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN, e.getMessage(), null);
          return;
       } catch (JOSEException e) {
          // Key sourcing failed or another internal exception.
          logger.warnf("Invalid OAuth2 token received: %s", e.getMessage());
-         emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_INVALID_TOKEN, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
-         ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+         // JWKS retrieval or key selection failed: our problem, not the client's.
+         emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_INVALID_TOKEN, Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), ctx);
+         ctx.abortWith(Response.status(Response.Status.INTERNAL_SERVER_ERROR).build());
          return;
       }
 
@@ -249,15 +254,17 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
          String resource = claimsSet.getClaimAsString("resource");
          if (resource != null && !resource.equalsIgnoreCase(fqdnScheme + fqdns.getFirst() + ctx.getUriInfo().getPath())) {
             logger.warnf("Invalid OAuth2 token received, resource claim does not match '%s'", fqdnScheme + fqdns.getFirst() + ctx.getUriInfo().getPath());
-            emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_FORBIDDEN_RESOURCE, Response.Status.FORBIDDEN.getStatusCode(), ctx);
-            ctx.abortWith(Response.status(Response.Status.FORBIDDEN).build());
+            emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_FORBIDDEN_RESOURCE, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
+            abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN,
+                  "The access token was not issued for this resource", null);
             return;
          }
       } catch (ParseException pe) {
          // Malformed token.
          logger.warnf("Bad OAuth2 token received, resource claim cannot be parsed as String", pe);
          emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MALFORMED_TOKEN, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
-         ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+         abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN,
+               "The resource claim cannot be parsed as a String", null);
          return;
       }
 
@@ -266,15 +273,17 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
          String serviceID = claimsSet.getClaimAsString("serviceId");
          if (serviceID != null && !serviceID.equals(service.id())) {
             logger.warnf("Invalid OAuth2 token received, serviceId claim does not match service ID '%s'", service.id());
-            emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_FORBIDDEN_SERVICE, Response.Status.FORBIDDEN.getStatusCode(), ctx);
-            ctx.abortWith(Response.status(Response.Status.FORBIDDEN).build());
+            emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_FORBIDDEN_SERVICE, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
+            abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN,
+                  "The access token was not issued for this service", null);
             return;
          }
       } catch (ParseException pe) {
          // Malformed token.
          logger.warnf("Bad OAuth2 token received, serviceId claim cannot be parsed as String", pe);
          emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MALFORMED_TOKEN, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
-         ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+         abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN,
+               "The serviceId claim cannot be parsed as a String", null);
          return;
       }
 
@@ -299,21 +308,25 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
             // Malformed token.
             logger.warnf("Bad OAuth2 token received, scope claim cannot be parsed as String or List<String>", pe);
             emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MALFORMED_TOKEN, Response.Status.UNAUTHORIZED.getStatusCode(), ctx);
-            ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED).build());
+            abortWithChallenge(ctx, Response.Status.UNAUTHORIZED, ERROR_INVALID_TOKEN,
+                  "The scope claim cannot be parsed as a String or a List of Strings", null);
             return;
          }
 
          if (tokenScopes == null || tokenScopes.isEmpty()) {
             logger.warnf("Invalid OAuth2 token received, no scope claim found but expected: '%s'", String.join(" ", oauth2Config.scopes()));
             emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MISSING_SCOPE, Response.Status.FORBIDDEN.getStatusCode(), ctx);
-            ctx.abortWith(Response.status(Response.Status.FORBIDDEN).build());
+            abortWithChallenge(ctx, Response.Status.FORBIDDEN, ERROR_INSUFFICIENT_SCOPE,
+                  "The access token carries no scope claim", String.join(" ", oauth2Config.scopes()));
             return;
          }
           for (String expectedScope : oauth2Config.scopes()) {
              if (!tokenScopes.contains(expectedScope)) {
                 logger.warnf("Invalid OAuth2 token received, scope claim does not contain expected scope: '%s'", expectedScope);
                 emitAuthenticationFailureAuditEvent(service, configuration, AuthenticationFailureAuditEvent.REASON_MISSING_SCOPE, Response.Status.FORBIDDEN.getStatusCode(), ctx);
-                ctx.abortWith(Response.status(Response.Status.FORBIDDEN).build());
+                abortWithChallenge(ctx, Response.Status.FORBIDDEN, ERROR_INSUFFICIENT_SCOPE,
+                      "The access token is missing the required scope '" + expectedScope + "'",
+                      String.join(" ", oauth2Config.scopes()));
                 return;
              }
           }
@@ -330,6 +343,53 @@ public class SecureEndpointFilter implements ContainerRequestFilter {
           ctx.setProperty(ISSUER_PROPERTY, issuer);
        }
      }
+
+   /**
+    * Build the RFC 9728 protected resource metadata URL for the requested exposition. Bearer
+    * challenges advertise it so a client can discover which authorization server to use.
+    */
+   private String resourceMetadataUrl(ContainerRequestContext ctx) {
+      String fqdnScheme = WebUtils.getHTTPScheme(fqdns.getFirst());
+      return fqdnScheme + fqdns.getFirst() + "/.well-known/oauth-protected-resource" + ctx.getUriInfo().getPath();
+   }
+
+   /**
+    * Abort the request with an RFC 6750 {@code WWW-Authenticate: Bearer} challenge. Every bearer
+    * rejection carries the resource metadata pointer, so a client whose token expired can rediscover
+    * the authorization server and retry rather than simply failing.
+    *
+    * @param error       RFC 6750 error code, or {@code null} when no credentials were presented
+    * @param description human readable detail for the error, may be {@code null}
+    * @param scope       space delimited scopes this resource requires, may be {@code null}
+    */
+   private void abortWithChallenge(ContainerRequestContext ctx, Response.Status status, String error,
+         String description, String scope) {
+      StringBuilder challenge = new StringBuilder("Bearer resource_metadata=\"")
+            .append(resourceMetadataUrl(ctx)).append('"');
+      if (error != null) {
+         challenge.append(", error=\"").append(error).append('"');
+         if (description != null && !description.isBlank()) {
+            challenge.append(", error_description=\"").append(quotedString(description)).append('"');
+         }
+         if (scope != null && !scope.isBlank()) {
+            challenge.append(", scope=\"").append(quotedString(scope)).append('"');
+         }
+      }
+      ctx.abortWith(Response.status(status).header(HttpHeaders.WWW_AUTHENTICATE, challenge.toString()).build());
+   }
+
+   /**
+    * Replace anything RFC 6750 disallows inside a challenge quoted-string, so that an exception
+    * message can neither terminate the value early nor split the header across lines.
+    */
+   private static String quotedString(String value) {
+      StringBuilder sb = new StringBuilder(value.length());
+      for (char c : value.toCharArray()) {
+         // Allowed: SP, "!", %x23-5B and %x5D-7E, which excludes both the quote and the backslash.
+         sb.append(c == ' ' || c == '!' || (c >= 0x23 && c <= 0x5B) || (c >= 0x5D && c <= 0x7E) ? c : ' ');
+      }
+      return sb.toString();
+   }
 
    /** Default JOSE verifies allows only exact match on issuers. This verifier allows multiple issuers. */
    static class MultipleIssuerClaimsVerifier extends DefaultJWTClaimsVerifier<SecurityContext> {
