@@ -1,43 +1,55 @@
 services:
   postgres:
     image: library/postgres:17-alpine
-    container_name: reshapr-postgres
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "54321:5432"
     volumes:
-      - "~/tmp/reshapr-data:/var/lib/postgresql/data/pgdata"
+      - "reshapr-postgres-data:/var/lib/postgresql/data/pgdata"
     environment:
-      - POSTGRES_USER=reshapr
-      - POSTGRES_PASSWORD=reshapr
-      - POSTGRES_DB=reshapr
+      - POSTGRES_USER=${POSTGRES_USER:-reshapr}
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES:-reshapr}
+      - POSTGRES_DB=${POSTGRES_DB:-reshapr}
       - PGDATA=/var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   control-plane:
     image: registry.reshapr.io/reshapr/reshapr-ctrl:nightly
-    container_name: reshapr-control-plane
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     restart: on-failure
-    ports:
-      - "5555:5555"
+    expose:
+      - "5555"
     environment:
-      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/reshapr
-      - QUARKUS_DATASOURCE_USERNAME=reshapr
-      - QUARKUS_DATASOURCE_PASSWORD=reshapr
-      - RESHAPR_ADMIN_NAME=admin
-      - RESHAPR_ADMIN_PASSWORD=password
-      - RESHAPR_ADMIN_EMAIL=reshapr@example.com
-      - RESHAPR_DEFAULT_GATEWAY_TOKENS=my-super-secret-token-xyz
+      # Coolify assigns a domain to this service on port 5555. SERVICE_FQDN_* holds the bare
+      # host (ctrl.example.com), SERVICE_URL_* the same host with its scheme (https://ctrl.example.com).
+      - SERVICE_FQDN_CONTROL_PLANE_5555
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-reshapr}
+      - QUARKUS_DATASOURCE_USERNAME=${POSTGRES_USER:-reshapr}
+      - QUARKUS_DATASOURCE_PASSWORD=${SERVICE_PASSWORD_POSTGRES:-reshapr}
+      # Bootstrap admin account. On Coolify SERVICE_PASSWORD_* values are generated per instance.
+      - RESHAPR_ADMIN_NAME=${RESHAPR_ADMIN_NAME:-admin}
+      - RESHAPR_ADMIN_PASSWORD=${SERVICE_PASSWORD_ADMIN:-password}
+      - RESHAPR_ADMIN_EMAIL=${RESHAPR_ADMIN_EMAIL:-reshapr@example.com}
+      # Admin API key of the control plane. Must match RESHAPR_ADMIN_API_KEY of the web-ui add-on.
+      - RESHAPR_CTRL_API_KEY=${SERVICE_PASSWORD_64_CTRLAPI:-CzBuQ9B0i8qrUQe6WLiDLqR3gv4iCbxvjTJQP0z0CFGQbjgBHPZSusa9d1gZKwwjdoCsJ8ogRwRzc06GipJSjSDkFOy0BSOKvAa2EjU3As9I5UjgizTzxsJAVJIXtdo2xiXHhcry9KeJa0zRhDtGmm8WMujoXrlfj0ChlJKaHZiZsRthd4UHrWkKur9KySXpPFP21H4C0Cq6OgM1rJpvMZ7Jd2ZzeEcd5lKE4PlchHZBVEdu8jYzjQtU50fkOPoR}
+      # Encrypts sensitive data at rest. Must be exactly 16, 24 or 32 characters long.
+      - RESHAPR_ENCRYPTION_KEY=${SERVICE_PASSWORD_ENCRYPTION:-my-super-secret-key-32-char-long}
+      # Shared secret the gateways authenticate with, see RESHAPR_CTRL_TOKEN below.
+      - RESHAPR_DEFAULT_GATEWAY_TOKENS=${SERVICE_PASSWORD_GATEWAYTOKEN:-my-super-secret-token-xyz}
       # Enable external OIDC ID provider authentication
       #- RESHAPR_AUTHENTICATION_IDP_ENABLED=true
+      # Public URL of this control plane, used to build the "<public-url>/auth/callback/oidc"
+      # redirect_uri sent to the identity provider. Only read when the IDP is enabled, and it must
+      # be registered as an allowed redirect URI on the provider side for every deployed instance.
+      #- RESHAPR_CTRL_PUBLIC_URL=${SERVICE_URL_CONTROL_PLANE:-http://localhost:5555}
       #- RESHAPR_AUTHENTICATION_IDP_URL=http://localhost:8888/realms/3rdparty/protocol/openid-connect/auth
-      #- RESHAPR_AUTHENTICATION_IDP_TOKEN_URL=http://host.docker.internal:8888/realms/3rdparty/protocol/openid-connect/token
+      #- RESHAPR_AUTHENTICATION_IDP_TOKEN_URL=http://keycloak:8888/realms/3rdparty/protocol/openid-connect/token
       #- RESHAPR_AUTHENTICATION_IDP_CLIENT_ID=reshapr-ctrl
-      #- RESHAPR_AUTHENTICATION_IDP_CLIENT_SECRET=my-3rdparty-idp-client-secret
+      #- RESHAPR_AUTHENTICATION_IDP_CLIENT_SECRET=${RESHAPR_AUTHENTICATION_IDP_CLIENT_SECRET:-my-3rdparty-idp-client-secret}
       # Enable debug logging for the control plane to help with troubleshooting
       #- QUARKUS_LOG_CONSOLE_LEVEL=DEBUG
       #- QUARKUS_LOG_CATEGORY__IO_RESHAPR_CTRL__LEVEL=DEBUG
@@ -50,21 +62,25 @@ services:
 
   gateway-01:
     image: registry.reshapr.io/reshapr/reshapr-proxy:nightly
-    container_name: reshapr-gateway-01
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       control-plane:
         condition: service_healthy
     restart: on-failure
-    ports:
-      - "7777:7777"
+    expose:
+      - "7777"
     environment:
+      # Coolify assigns a domain to this service on port 7777, exposed as a bare host (gw.example.com).
+      - SERVICE_FQDN_GATEWAY_01_7777
+      # Public endpoint(s) the gateway advertises for its MCP expositions.
+      # reshapr.gateway.fqdns expects a bare "host[:port]" and derives the scheme itself.
+      - RESHAPR_GATEWAY_FQDNS=${SERVICE_FQDN_GATEWAY_01_7777:-localhost:7777}
       - RESHAPR_CTRL_HOST=control-plane
       - RESHAPR_CTRL_PORT=5555
       # Note: this token must match one of the tokens defined in RESHAPR_DEFAULT_GATEWAY_TOKENS in the control-plane
       # with the prefix "reshapr-" (e.g. the default organization this gateway is attached)
-      - RESHAPR_CTRL_TOKEN=reshapr-my-super-secret-token-xyz
+      - RESHAPR_CTRL_TOKEN=reshapr-${SERVICE_PASSWORD_GATEWAYTOKEN:-my-super-secret-token-xyz}
+      # Admin API key of this gateway.
+      - RESHAPR_GATEWAY_API_KEY=${SERVICE_PASSWORD_64_GATEWAYAPI:-cFtltSLYHYZ0lT1zp0S0gq1asg6mMjCUEgHqxgf8R9aUYuCCefrBM2sZZutALEYw6y4EvPaRAQpBs5bjVx2Zp0LqQrHlsz31ZzwVqSIhJDwPY0S44sbDCD5xUeFlcEPOMA4Reugd6GbtalpmUSEu96B37SgjqAaPUqzDw2YeIJuWaP7FJlPlrEg6RQLY5w2piVHXeYrTDFLihQf63IlYbHVIWsCt1LBgQFsgBQjsxXjFtJtVQluAGVlht5m061dp}
       # Enable debug logging for the proxy to help with troubleshooting
       #- QUARKUS_LOG_CONSOLE_LEVEL=DEBUG
       #- QUARKUS_LOG_CATEGORY__IO_RESHAPR_PROXY__LEVEL=DEBUG
@@ -77,3 +93,6 @@ services:
       interval: 5s
       timeout: 2s
       retries: 3
+
+volumes:
+  reshapr-postgres-data:

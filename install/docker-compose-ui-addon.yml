@@ -1,21 +1,22 @@
 services:
   web-ui:
     image: registry.reshapr.io/reshapr/reshapr-ui:nightly
-    container_name: reshapr-web-ui
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "3333:3333"
+    expose:
+      - "3333"
     environment:
+      # Coolify assigns a domain to this service on port 3333. SERVICE_FQDN_* holds the bare
+      # host (ui.example.com), SERVICE_URL_* the same host with its scheme (https://ui.example.com).
+      - SERVICE_FQDN_WEB_UI_3333
+      # The reshapr control plane URL, reached over the internal compose network.
       - RESHAPR_CTRL_URL=http://control-plane:5555
-      # The reshapr control plane API key, e.g. "my-api-key"
-      - RESHAPR_ADMIN_API_KEY=CzBuQ9B0i8qrUQe6WLiDLqR3gv4iCbxvjTJQP0z0CFGQbjgBHPZSusa9d1gZKwwjdoCsJ8ogRwRzc06GipJSjSDkFOy0BSOKvAa2EjU3As9I5UjgizTzxsJAVJIXtdo2xiXHhcry9KeJa0zRhDtGmm8WMujoXrlfj0ChlJKaHZiZsRthd4UHrWkKur9KySXpPFP21H4C0Cq6OgM1rJpvMZ7Jd2ZzeEcd5lKE4PlchHZBVEdu8jYzjQtU50fkOPoR
-      # The reshapr control plane web-ui application public URL, e.g. "http://localhost:5173"
-      - RESHAPR_WEBUI_PUBLIC_URL=http://localhost:5555
+      # The reshapr control plane API key. Must match RESHAPR_CTRL_API_KEY of the control-plane.
+      - RESHAPR_ADMIN_API_KEY=${SERVICE_PASSWORD_64_CTRLAPI:-CzBuQ9B0i8qrUQe6WLiDLqR3gv4iCbxvjTJQP0z0CFGQbjgBHPZSusa9d1gZKwwjdoCsJ8ogRwRzc06GipJSjSDkFOy0BSOKvAa2EjU3As9I5UjgizTzxsJAVJIXtdo2xiXHhcry9KeJa0zRhDtGmm8WMujoXrlfj0ChlJKaHZiZsRthd4UHrWkKur9KySXpPFP21H4C0Cq6OgM1rJpvMZ7Jd2ZzeEcd5lKE4PlchHZBVEdu8jYzjQtU50fkOPoR}
+      # The reshapr web-ui application public URL, used to build the OIDC redirect_uri.
+      - RESHAPR_WEBUI_PUBLIC_URL=${SERVICE_URL_WEB_UI:-http://localhost:3333}
       # If you need to restrict access to the web-ui application, you can tune the HOST.
       # - HOST=0.0.0.0
       # Public origin as perceived by the browser to prevent CSRF protection issues.
-      - ORIGIN=http://localhost:3333
-      # If behind a reverse proxy that sets the X-Forwarded-Proto and X-Forwarded-Host headers, uncomment the following lines.
-      # - PROTOCOL_HEADER=x-forwarded-proto
-      # - HOST_HEADER=x-forwarded-host
+      - ORIGIN=${SERVICE_URL_WEB_UI:-http://localhost:3333}
+      # Behind Coolify's reverse proxy these let SvelteKit derive the origin from the forwarded headers.
+      - PROTOCOL_HEADER=x-forwarded-proto
+      - HOST_HEADER=x-forwarded-host
