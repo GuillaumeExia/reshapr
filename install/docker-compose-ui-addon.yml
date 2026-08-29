@@ -4,9 +4,6 @@ services:
     expose:
       - "3333"
     environment:
-      # Coolify assigns a domain to this service on port 3333. SERVICE_FQDN_* holds the bare
-      # host (ui.example.com), SERVICE_URL_* the same host with its scheme (https://ui.example.com).
-      - SERVICE_FQDN_WEB_UI_3333
       # The reshapr control plane URL, reached over the internal compose network.
       - RESHAPR_CTRL_URL=http://control-plane:5555
       # The reshapr control plane API key. Must match RESHAPR_CTRL_API_KEY of the control-plane.
