@@ -87,11 +87,11 @@ services:
       # e.g. https://ingest.eu2.signoz.cloud:443 for SigNoz Cloud.
       - QUARKUS_OTEL_EXPORTER_OTLP_ENDPOINT=${QUARKUS_OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - QUARKUS_OTEL_EXPORTER_OTLP_PROTOCOL=${QUARKUS_OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      # The header name is literal, only its value is the SigNoz ingestion key.
-      - QUARKUS_OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=${SIGNOZ_INGESTION_KEY:-}
+      # Comma separated "name=value" pairs, e.g. signoz-ingestion-key=<your SigNoz ingestion key>.
+      - QUARKUS_OTEL_EXPORTER_OTLP_HEADERS=${QUARKUS_OTEL_EXPORTER_OTLP_HEADERS:-}
       # Names this gateway in the SigNoz APM and log resource attributes. Give every deployed
       # instance its own service name and environment so their telemetry stays distinguishable.
-      - QUARKUS_OTEL_RESOURCE_ATTRIBUTES=service.name=${RESHAPR_OTEL_SERVICE_NAME:-reshapr-gateway},service.namespace=${RESHAPR_OTEL_SERVICE_NAMESPACE:-reshapr},deployment.environment=${RESHAPR_OTEL_ENVIRONMENT:-dev}
+      - QUARKUS_OTEL_RESOURCE_ATTRIBUTES=${QUARKUS_OTEL_RESOURCE_ATTRIBUTES:-service.name=reshapr-gateway,service.namespace=reshapr,deployment.environment=dev}
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:7777/q/health/ready" ]
       start_period: 5s
