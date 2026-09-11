@@ -80,9 +80,18 @@ services:
       # Enable debug logging for the proxy to help with troubleshooting
       #- QUARKUS_LOG_CONSOLE_LEVEL=DEBUG
       #- QUARKUS_LOG_CATEGORY__IO_RESHAPR_PROXY__LEVEL=DEBUG
-      # OpenTelemetry is enabled by default, but can be disabled to not pollute with connection errors
-      # in the logs if you don't have an OTEL collector running locally
-      - QUARKUS_OTEL_SDK_DISABLED=true
+      # OpenTelemetry. The proxy turns the SDK on in the prod profile, so it is disabled here by
+      # default to not pollute the logs with connection errors when no collector is reachable.
+      # Set QUARKUS_OTEL_SDK_DISABLED=false in Coolify to ship traces, metrics and logs.
+      - QUARKUS_OTEL_SDK_DISABLED=${QUARKUS_OTEL_SDK_DISABLED:-true}
+      # e.g. https://ingest.eu2.signoz.cloud:443 for SigNoz Cloud.
+      - QUARKUS_OTEL_EXPORTER_OTLP_ENDPOINT=${QUARKUS_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - QUARKUS_OTEL_EXPORTER_OTLP_PROTOCOL=${QUARKUS_OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      # The header name is literal, only its value is the SigNoz ingestion key.
+      - QUARKUS_OTEL_EXPORTER_OTLP_HEADERS=signoz-ingestion-key=${SIGNOZ_INGESTION_KEY:-}
+      # Names this gateway in the SigNoz APM and log resource attributes. Give every deployed
+      # instance its own service name and environment so their telemetry stays distinguishable.
+      - QUARKUS_OTEL_RESOURCE_ATTRIBUTES=service.name=${RESHAPR_OTEL_SERVICE_NAME:-reshapr-gateway},service.namespace=${RESHAPR_OTEL_SERVICE_NAMESPACE:-reshapr},deployment.environment=${RESHAPR_OTEL_ENVIRONMENT:-dev}
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:7777/q/health/ready" ]
       start_period: 5s
